@@ -2068,15 +2068,32 @@ impl<T: UserEvent> CefRuntime<T> {
       cache_path: cache_path.to_string_lossy().to_string().as_str().into(),
       ..Default::default()
     };
-    assert_eq!(
-      cef::initialize(
-        Some(args.as_main_args()),
-        Some(&settings),
-        Some(&mut app),
-        std::ptr::null_mut()
-      ),
-      1
+    // OpenHuman: replace the original `assert_eq!(cef::initialize(...), 1)`
+    // with a logged, panic-with-context fallback. The dominant trigger for
+    // CEF returning 0 here is a second app instance whose cache lock is
+    // still held by the primary (Sentry OPENHUMAN-TAURI-A). The shell now
+    // registers `tauri-plugin-single-instance` to prevent that race, but if
+    // CEF ever fails to initialize for another reason (corrupt cache,
+    // missing helpers, sandbox denied, …) we want the Sentry event to
+    // include the cache path + return code instead of a bare
+    // `assertion left == right` with no actionable info.
+    let init_ret = cef::initialize(
+      Some(args.as_main_args()),
+      Some(&settings),
+      Some(&mut app),
+      std::ptr::null_mut(),
     );
+    if init_ret != 1 {
+      let cache_display = cache_path.display();
+      log::error!(
+        "[cef-init] cef::initialize returned {init_ret} (expected 1); cache_path={cache_display}"
+      );
+      panic!(
+        "cef::initialize failed (returned {init_ret}, expected 1); cache_path={cache_display}. \
+         This usually means another instance of the app is already running and holds the CEF \
+         cache lock — make sure tauri-plugin-single-instance is registered before Builder::build()."
+      );
+    }
 
     // Initialize GTK for system tray support on Linux.
     // The muda crate (used by TrayIconBuilder) requires GTK to be initialized.
