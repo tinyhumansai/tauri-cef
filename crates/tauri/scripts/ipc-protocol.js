@@ -81,7 +81,19 @@
         __TAURI_INVOKE_KEY__
       })
       // `window.ipc.postMessage` came from `tauri-runtime-wry` > `wry` [`with_ipc_handler`](https://github.com/tauri-apps/wry/blob/a0403b9e2f1ff9d73be7dce1184f058afcaa1d82/src/lib.rs#L1130)
-      window.ipc.postMessage(data)
+      // CEF does not wire `window.ipc` (see `app/src-tauri/src/cef_impl.rs`), so
+      // the fallback path throws `TypeError: Cannot read properties of undefined
+      // (reading 'postMessage')` which escapes the fetch `.then()` chain as an
+      // unhandled promise rejection (openhuman #5155). Guard the access and
+      // reject the pending `core.js` Promise via `runCallback(error, ...)` so
+      // callers don't hang and the error is handled, not silently dropped.
+      if (window.ipc && typeof window.ipc.postMessage === 'function') {
+        window.ipc.postMessage(data)
+      } else {
+        window.__TAURI_INTERNALS__.runCallback(error, {
+          message: 'IPC postMessage interface is unavailable on this platform'
+        })
+      }
     }
   }
 
