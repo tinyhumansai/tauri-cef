@@ -18,8 +18,8 @@ pub const ALLOWED_MEDIA_MASK: u32 =
 
 /// Mask of prompt-permission bits auto-accepted without user interaction.
 /// Covers the set an embedded SaaS app (Slack, Meet, Discord, Notion, etc.)
-/// realistically needs: mic/camera streams + their PTZ/captured-surface
-/// siblings, clipboard, notifications, storage access, and the Chromium
+/// realistically needs: mic/camera streams + camera PTZ, clipboard,
+/// notifications, storage access, and the Chromium
 /// Private Network Access family (loopback / local-network) that WebRTC
 /// call flows like Slack Huddles use for STUN/TURN candidate gathering on
 /// the host machine.
@@ -32,7 +32,6 @@ pub const ALLOWED_PROMPT_MASK: u32 =
   cef_permission_request_types_t::CEF_PERMISSION_TYPE_CAMERA_STREAM as u32
     | cef_permission_request_types_t::CEF_PERMISSION_TYPE_CAMERA_PAN_TILT_ZOOM as u32
     | cef_permission_request_types_t::CEF_PERMISSION_TYPE_MIC_STREAM as u32
-    | cef_permission_request_types_t::CEF_PERMISSION_TYPE_CAPTURED_SURFACE_CONTROL as u32
     | cef_permission_request_types_t::CEF_PERMISSION_TYPE_CLIPBOARD as u32
     | cef_permission_request_types_t::CEF_PERMISSION_TYPE_NOTIFICATIONS as u32
     | cef_permission_request_types_t::CEF_PERMISSION_TYPE_STORAGE_ACCESS as u32
@@ -186,6 +185,8 @@ mod tests {
 
   const MIC: u32 = cef_permission_request_types_t::CEF_PERMISSION_TYPE_MIC_STREAM as u32;
   const CAMERA: u32 = cef_permission_request_types_t::CEF_PERMISSION_TYPE_CAMERA_STREAM as u32;
+  const CAPTURED_SURFACE: u32 =
+    cef_permission_request_types_t::CEF_PERMISSION_TYPE_CAPTURED_SURFACE_CONTROL as u32;
   const NOTIFICATIONS: u32 =
     cef_permission_request_types_t::CEF_PERMISSION_TYPE_NOTIFICATIONS as u32;
   const GEOLOCATION: u32 = cef_permission_request_types_t::CEF_PERMISSION_TYPE_GEOLOCATION as u32;
@@ -240,6 +241,11 @@ mod tests {
   #[test]
   fn media_empty_request_denied() {
     assert_eq!(allowed_media_permissions(0), 0);
+  }
+
+  #[test]
+  fn captured_surface_prompt_denied() {
+    assert!(!should_accept_permission_prompt(CAPTURED_SURFACE));
   }
 
   #[test]
