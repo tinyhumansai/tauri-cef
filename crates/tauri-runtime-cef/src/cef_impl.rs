@@ -921,7 +921,8 @@ wrap_permission_handler! {
         callback.cont(allowed);
         return 1;
       }
-      0
+      callback.cancel();
+      1
     }
 
     fn on_show_permission_prompt(
