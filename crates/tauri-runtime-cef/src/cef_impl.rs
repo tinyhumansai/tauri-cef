@@ -903,8 +903,9 @@ wrap_permission_handler! {
       let Some(callback) = callback else {
         return 0;
       };
-      // Forward only mic/camera user-media bits. Desktop capture and unknown
-      // bits are dropped so we never widen what Chromium asked for.
+      // CEF media callbacks are all-or-nothing: continue only an unchanged,
+      // nonempty device mic/camera request. Desktop capture and unknown bits
+      // deny the whole callback instead of forwarding a partial mask.
       let allowed = crate::permissions::allowed_media_permissions(requested_permissions);
       let origin = requesting_origin
         .map(|s| s.to_string())
