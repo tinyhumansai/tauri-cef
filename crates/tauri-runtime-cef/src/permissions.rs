@@ -10,13 +10,11 @@
 use cef::sys::{cef_media_access_permission_types_t, cef_permission_request_types_t};
 
 /// Mask of media-access bits the app is willing to forward to Chromium.
-/// Covers both user-media (`getUserMedia`: mic + camera) and display-media
-/// (`getDisplayMedia`: desktop audio + desktop video / screen share).
+/// Covers only user-media (`getUserMedia`: mic + camera); display capture is
+/// never forwarded.
 pub const ALLOWED_MEDIA_MASK: u32 =
   cef_media_access_permission_types_t::CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE as u32
-    | cef_media_access_permission_types_t::CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE as u32
-    | cef_media_access_permission_types_t::CEF_MEDIA_PERMISSION_DESKTOP_AUDIO_CAPTURE as u32
-    | cef_media_access_permission_types_t::CEF_MEDIA_PERMISSION_DESKTOP_VIDEO_CAPTURE as u32;
+    | cef_media_access_permission_types_t::CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE as u32;
 
 /// Mask of prompt-permission bits auto-accepted without user interaction.
 /// Covers the set an embedded SaaS app (Slack, Meet, Discord, Notion, etc.)
@@ -44,8 +42,8 @@ pub const ALLOWED_PROMPT_MASK: u32 =
     | cef_permission_request_types_t::CEF_PERMISSION_TYPE_LOCAL_NETWORK_ACCESS as u32;
 
 /// Returns the subset of `requested` permissions the embedder will forward to
-/// Chromium for a `getUserMedia` / `getDisplayMedia` request. Zero means
-/// "nothing requested is allowed — deny the whole callback".
+/// Chromium for a `getUserMedia` request. Zero means "nothing requested is
+/// allowed — deny the whole callback".
 pub fn allowed_media_permissions(requested: u32) -> u32 {
   requested & ALLOWED_MEDIA_MASK
 }
@@ -202,13 +200,13 @@ mod tests {
   }
 
   #[test]
-  fn media_desktop_audio_allowed() {
-    assert_eq!(allowed_media_permissions(DESKTOP_AUDIO), DESKTOP_AUDIO);
+  fn media_desktop_audio_denied() {
+    assert_eq!(allowed_media_permissions(DESKTOP_AUDIO), 0);
   }
 
   #[test]
-  fn media_desktop_video_allowed() {
-    assert_eq!(allowed_media_permissions(DESKTOP_VIDEO), DESKTOP_VIDEO);
+  fn media_desktop_video_denied() {
+    assert_eq!(allowed_media_permissions(DESKTOP_VIDEO), 0);
   }
 
   #[test]
@@ -218,9 +216,15 @@ mod tests {
   }
 
   #[test]
-  fn media_display_media_combination_allowed() {
+  fn media_display_media_combination_denied() {
     let requested = DESKTOP_AUDIO | DESKTOP_VIDEO;
-    assert_eq!(allowed_media_permissions(requested), requested);
+    assert_eq!(allowed_media_permissions(requested), 0);
+  }
+
+  #[test]
+  fn media_mixed_device_and_desktop_request_filters_desktop_bits() {
+    let requested = DEVICE_AUDIO | DESKTOP_VIDEO;
+    assert_eq!(allowed_media_permissions(requested), DEVICE_AUDIO);
   }
 
   #[test]

@@ -903,9 +903,8 @@ wrap_permission_handler! {
       let Some(callback) = callback else {
         return 0;
       };
-      // Forward every media bit we know about — mic/camera (getUserMedia) plus
-      // desktop audio/video (getDisplayMedia / screen share). Unknown bits are
-      // dropped so we never widen what Chromium asked for.
+      // Forward only mic/camera user-media bits. Desktop capture and unknown
+      // bits are dropped so we never widen what Chromium asked for.
       let allowed = crate::permissions::allowed_media_permissions(requested_permissions);
       let origin = requesting_origin
         .map(|s| s.to_string())
