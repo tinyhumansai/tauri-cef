@@ -58,12 +58,18 @@ fn color_to_cef_argb(color: tauri_utils::config::Color) -> u32 {
 }
 
 /// Convert position to the coordinate space expected by CEF.
-/// On Windows, CEF uses physical coordinates; on other platforms, logical.
+/// Windows and Linux take physical coordinates; macOS takes logical ones.
+///
+/// Linux used to be grouped with macOS, which silently broke every scaled
+/// desktop: a child webview asked for at logical x=225 with a 1.40625 scale was
+/// handed x=225 device pixels instead of 316, so it overlapped whatever sat to
+/// its left and came out too small. CEF places child windows through the X11
+/// geometry of the parent, which is device pixels, exactly like Win32.
 #[inline]
 fn position_to_cef(position: Position, scale_factor: f64) -> cef::Point {
-  #[cfg(windows)]
+  #[cfg(any(windows, target_os = "linux"))]
   let p = position.to_physical::<i32>(scale_factor);
-  #[cfg(not(windows))]
+  #[cfg(not(any(windows, target_os = "linux")))]
   let p = position.to_logical::<i32>(scale_factor);
   cef::Point { x: p.x, y: p.y }
 }
@@ -71,10 +77,61 @@ fn position_to_cef(position: Position, scale_factor: f64) -> cef::Point {
 /// Convert size to the coordinate space expected by CEF.
 /// On Windows, CEF uses physical coordinates; on other platforms, logical.
 #[inline]
+/// Desktop scale factor as Chromium itself reads it on X11: the `Xft.dpi` X
+/// resource over the 96 dpi baseline. CEF's own display API answers 1.0 under
+/// XWayland even when the desktop is scaled, and everything that converts
+/// logical rects to device pixels then lands short — child webviews appear at
+/// their logical coordinates and overlap whatever sits to their left.
+#[cfg(target_os = "linux")]
+fn x11_xft_scale() -> Option<f64> {
+  use x11_dl::xlib;
+
+  let xlib = xlib::Xlib::open().ok()?;
+  let scale = unsafe {
+    let display = (xlib.XOpenDisplay)(std::ptr::null());
+    if display.is_null() {
+      return None;
+    }
+    let resources = (xlib.XResourceManagerString)(display);
+    let parsed = if resources.is_null() {
+      None
+    } else {
+      std::ffi::CStr::from_ptr(resources)
+        .to_string_lossy()
+        .lines()
+        .find_map(|line| {
+          let value = line.trim().strip_prefix("Xft.dpi:")?;
+          value.trim().parse::<f64>().ok()
+        })
+        .map(|dpi| dpi / 96.0)
+    };
+    (xlib.XCloseDisplay)(display);
+    parsed
+  };
+  scale.filter(|scale| *scale > 0.5 && *scale < 8.0)
+}
+
+/// Pick the scale factor to convert logical rects with, preferring whatever the
+/// window/display reported and falling back to the X11 desktop scale.
+fn effective_scale_factor(reported: Option<f64>) -> f64 {
+  let reported = reported.filter(|scale| *scale > 0.0);
+  #[cfg(target_os = "linux")]
+  {
+    // A reported 1.0 on Linux is indistinguishable from "unknown", so trust the
+    // X resource when it disagrees.
+    if reported.unwrap_or(1.0) <= 1.0 {
+      if let Some(scale) = x11_xft_scale() {
+        return scale;
+      }
+    }
+  }
+  reported.unwrap_or(1.0)
+}
+
 fn size_to_cef(size: Size, scale_factor: f64) -> cef::Size {
-  #[cfg(windows)]
+  #[cfg(any(windows, target_os = "linux"))]
   let s = size.to_physical::<i32>(scale_factor);
-  #[cfg(not(windows))]
+  #[cfg(not(any(windows, target_os = "linux")))]
   let s = size.to_logical::<i32>(scale_factor);
   cef::Size {
     width: s.width,
@@ -2075,11 +2132,12 @@ fn handle_webview_message<T: UserEvent>(
         .borrow()
         .get(&window_id)
         .and_then(|app_window| {
-          let device_scale_factor = app_window
-            .window()
-            .and_then(|window| window.display())
-            .map(|d| d.device_scale_factor() as f64)
-            .unwrap_or(1.0);
+          let device_scale_factor = effective_scale_factor(
+            app_window
+              .window()
+              .and_then(|window| window.display())
+              .map(|d| d.device_scale_factor() as f64),
+          );
 
           let position = position_to_cef(position, device_scale_factor);
 
@@ -2125,11 +2183,12 @@ fn handle_webview_message<T: UserEvent>(
         .borrow()
         .get(&window_id)
         .and_then(|app_window| {
-          let device_scale_factor = app_window
-            .window()
-            .and_then(|window| window.display())
-            .map(|d| d.device_scale_factor() as f64)
-            .unwrap_or(1.0);
+          let device_scale_factor = effective_scale_factor(
+            app_window
+              .window()
+              .and_then(|window| window.display())
+              .map(|d| d.device_scale_factor() as f64),
+          );
 
           let size = size_to_cef(size, device_scale_factor);
 
@@ -2175,11 +2234,12 @@ fn handle_webview_message<T: UserEvent>(
         .borrow()
         .get(&window_id)
         .and_then(|app_window| {
-          let device_scale_factor = app_window
-            .window()
-            .and_then(|window| window.display())
-            .map(|d| d.device_scale_factor() as f64)
-            .unwrap_or(1.0);
+          let device_scale_factor = effective_scale_factor(
+            app_window
+              .window()
+              .and_then(|window| window.display())
+              .map(|d| d.device_scale_factor() as f64),
+          );
 
           let new_bounds = rect_to_cef(bounds, device_scale_factor);
           app_window
@@ -4045,10 +4105,18 @@ pub(crate) fn create_webview<T: UserEvent>(
   let browser_settings = browser_settings_from_webview_attributes(&webview_attributes);
 
   let bounds = webview_attributes.bounds.map(|bounds| {
-    let device_scale_factor = window
-      .display()
-      .map(|d| d.device_scale_factor() as f64)
-      .unwrap_or(1.0);
+    // `window.display()` yields nothing on X11/XWayland, and falling back to 1.0
+    // placed child webviews at their logical coordinates: with a 1.4 desktop
+    // scale a panel asked for at x=225 landed at x=225 device pixels instead of
+    // 315, overlapping the app's own sidebar by the difference. The primary
+    // display carries the factor CEF actually renders with, so prefer it
+    // whenever the window cannot answer.
+    let device_scale_factor = effective_scale_factor(
+      window
+        .display()
+        .map(|d| d.device_scale_factor() as f64)
+        .or_else(|| cef::display_get_primary().map(|d| d.device_scale_factor() as f64)),
+    );
 
     rect_to_cef(bounds, device_scale_factor)
   });
