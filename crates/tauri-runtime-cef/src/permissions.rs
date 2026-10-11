@@ -10,18 +10,16 @@
 use cef::sys::{cef_media_access_permission_types_t, cef_permission_request_types_t};
 
 /// Mask of media-access bits the app is willing to forward to Chromium.
-/// Covers both user-media (`getUserMedia`: mic + camera) and display-media
-/// (`getDisplayMedia`: desktop audio + desktop video / screen share).
+/// Covers only user-media (`getUserMedia`: mic + camera); display capture is
+/// never forwarded.
 pub const ALLOWED_MEDIA_MASK: u32 =
   cef_media_access_permission_types_t::CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE as u32
-    | cef_media_access_permission_types_t::CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE as u32
-    | cef_media_access_permission_types_t::CEF_MEDIA_PERMISSION_DESKTOP_AUDIO_CAPTURE as u32
-    | cef_media_access_permission_types_t::CEF_MEDIA_PERMISSION_DESKTOP_VIDEO_CAPTURE as u32;
+    | cef_media_access_permission_types_t::CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE as u32;
 
 /// Mask of prompt-permission bits auto-accepted without user interaction.
 /// Covers the set an embedded SaaS app (Slack, Meet, Discord, Notion, etc.)
-/// realistically needs: mic/camera streams + their PTZ/captured-surface
-/// siblings, clipboard, notifications, storage access, and the Chromium
+/// realistically needs: mic/camera streams + camera PTZ, clipboard,
+/// notifications, storage access, and the Chromium
 /// Private Network Access family (loopback / local-network) that WebRTC
 /// call flows like Slack Huddles use for STUN/TURN candidate gathering on
 /// the host machine.
@@ -34,7 +32,6 @@ pub const ALLOWED_PROMPT_MASK: u32 =
   cef_permission_request_types_t::CEF_PERMISSION_TYPE_CAMERA_STREAM as u32
     | cef_permission_request_types_t::CEF_PERMISSION_TYPE_CAMERA_PAN_TILT_ZOOM as u32
     | cef_permission_request_types_t::CEF_PERMISSION_TYPE_MIC_STREAM as u32
-    | cef_permission_request_types_t::CEF_PERMISSION_TYPE_CAPTURED_SURFACE_CONTROL as u32
     | cef_permission_request_types_t::CEF_PERMISSION_TYPE_CLIPBOARD as u32
     | cef_permission_request_types_t::CEF_PERMISSION_TYPE_NOTIFICATIONS as u32
     | cef_permission_request_types_t::CEF_PERMISSION_TYPE_STORAGE_ACCESS as u32
@@ -43,11 +40,15 @@ pub const ALLOWED_PROMPT_MASK: u32 =
     | cef_permission_request_types_t::CEF_PERMISSION_TYPE_LOCAL_NETWORK as u32
     | cef_permission_request_types_t::CEF_PERMISSION_TYPE_LOCAL_NETWORK_ACCESS as u32;
 
-/// Returns the subset of `requested` permissions the embedder will forward to
-/// Chromium for a `getUserMedia` / `getDisplayMedia` request. Zero means
-/// "nothing requested is allowed — deny the whole callback".
+/// Returns `requested` only when every requested permission is a device
+/// mic/camera bit. CEF media callbacks are all-or-nothing: any desktop or
+/// unknown bit returns zero and denies the whole callback.
 pub fn allowed_media_permissions(requested: u32) -> u32 {
-  requested & ALLOWED_MEDIA_MASK
+  if requested != 0 && (requested & !ALLOWED_MEDIA_MASK) == 0 {
+    requested
+  } else {
+    0
+  }
 }
 
 /// Returns `true` iff every bit in `requested` is covered by
@@ -184,6 +185,8 @@ mod tests {
 
   const MIC: u32 = cef_permission_request_types_t::CEF_PERMISSION_TYPE_MIC_STREAM as u32;
   const CAMERA: u32 = cef_permission_request_types_t::CEF_PERMISSION_TYPE_CAMERA_STREAM as u32;
+  const CAPTURED_SURFACE: u32 =
+    cef_permission_request_types_t::CEF_PERMISSION_TYPE_CAPTURED_SURFACE_CONTROL as u32;
   const NOTIFICATIONS: u32 =
     cef_permission_request_types_t::CEF_PERMISSION_TYPE_NOTIFICATIONS as u32;
   const GEOLOCATION: u32 = cef_permission_request_types_t::CEF_PERMISSION_TYPE_GEOLOCATION as u32;
@@ -202,13 +205,13 @@ mod tests {
   }
 
   #[test]
-  fn media_desktop_audio_allowed() {
-    assert_eq!(allowed_media_permissions(DESKTOP_AUDIO), DESKTOP_AUDIO);
+  fn media_desktop_audio_denied() {
+    assert_eq!(allowed_media_permissions(DESKTOP_AUDIO), 0);
   }
 
   #[test]
-  fn media_desktop_video_allowed() {
-    assert_eq!(allowed_media_permissions(DESKTOP_VIDEO), DESKTOP_VIDEO);
+  fn media_desktop_video_denied() {
+    assert_eq!(allowed_media_permissions(DESKTOP_VIDEO), 0);
   }
 
   #[test]
@@ -218,9 +221,21 @@ mod tests {
   }
 
   #[test]
-  fn media_display_media_combination_allowed() {
+  fn media_display_media_combination_denied() {
     let requested = DESKTOP_AUDIO | DESKTOP_VIDEO;
-    assert_eq!(allowed_media_permissions(requested), requested);
+    assert_eq!(allowed_media_permissions(requested), 0);
+  }
+
+  #[test]
+  fn media_mixed_device_and_desktop_requests_denied() {
+    for requested in [
+      DEVICE_AUDIO | DESKTOP_AUDIO,
+      DEVICE_AUDIO | DESKTOP_VIDEO,
+      DEVICE_VIDEO | DESKTOP_AUDIO,
+      DEVICE_VIDEO | DESKTOP_VIDEO,
+    ] {
+      assert_eq!(allowed_media_permissions(requested), 0);
+    }
   }
 
   #[test]
@@ -229,12 +244,14 @@ mod tests {
   }
 
   #[test]
-  fn media_unknown_bit_stripped() {
+  fn captured_surface_prompt_denied() {
+    assert!(!should_accept_permission_prompt(CAPTURED_SURFACE));
+  }
+
+  #[test]
+  fn media_unknown_bit_denied() {
     let unknown_bit: u32 = 1 << 30;
-    assert_eq!(
-      allowed_media_permissions(DEVICE_AUDIO | unknown_bit),
-      DEVICE_AUDIO
-    );
+    assert_eq!(allowed_media_permissions(DEVICE_AUDIO | unknown_bit), 0);
     assert_eq!(allowed_media_permissions(unknown_bit), 0);
   }
 
